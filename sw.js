@@ -2,7 +2,7 @@
    offline on phone, tablet, PC and laptop. Must be served over https (or
    localhost); browsers ignore service workers on a plain file:// page. */
 
-var CACHE_NAME = 'tahsili-pro-v2';
+var CACHE_NAME = 'tahsili-pro-v3';
 var APP_SHELL = [
   './',
   './index.html',
