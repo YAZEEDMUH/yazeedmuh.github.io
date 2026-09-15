@@ -685,16 +685,25 @@ var Store = (function(){
   }
   function recordMistake(ownerEmail, qid, selectedIndex){
     var id = mistakeDocId(ownerEmail,qid);
-    var payload = {questionId:qid, ownerEmail:ownerEmail, lastSelectedIndex:selectedIndex, updatedAt:Date.now()};
     if(backend==='local'){
       var prev = mem.mistakes[id];
+      var payload = {questionId:qid, ownerEmail:ownerEmail, lastSelectedIndex:selectedIndex, updatedAt:Date.now()};
       payload.wrongCount = prev ? prev.wrongCount+1 : 1;
       mem.mistakes[id]=payload; saveLocal(); return Promise.resolve();
     }
-    return db.doc('mistakes/'+id).get().then(function(s){
-      payload.wrongCount = (s.exists && s.data().wrongCount) ? s.data().wrongCount+1 : 1;
-      return db.doc('mistakes/'+id).set(payload);
-    });
+    /* Write directly with increment() instead of reading the doc first.
+       A read-then-write here would fail under security rules that deny
+       reading a mistake doc before it exists, silently dropping the
+       mistake. set(..., {merge:true}) with increment() needs only a
+       write permission and works whether or not the doc already exists. */
+    var inc = firebase.firestore.FieldValue.increment;
+    return db.doc('mistakes/'+id).set({
+      questionId: qid,
+      ownerEmail: ownerEmail,
+      lastSelectedIndex: selectedIndex,
+      updatedAt: Date.now(),
+      wrongCount: inc(1)
+    }, {merge:true});
   }
   function removeMistake(ownerEmail, qid){
     var id = mistakeDocId(ownerEmail,qid);
@@ -1570,7 +1579,8 @@ window.App = {
       var q = S.quiz.list[i];
       if(!S.quiz.answers[q.id]){
         S.quiz.answers[q.id] = {questionId:q.id, selectedIndex:null, isCorrect:false, timeTakenSec:null, points:0};
-        Store.recordMistake(S.auth.email, q.id, null).then(function(){});
+        S.mistakes[q.id] = { questionId:q.id, wrongCount:(S.mistakes[q.id]?S.mistakes[q.id].wrongCount+1:1), lastSelectedIndex:null };
+        Store.recordMistake(S.auth.email, q.id, null).catch(function(err){ console.error('recordMistake failed', err); });
       }
     }
     if(S.quiz.sectionIndex+1 < S.quiz.sections.length){
@@ -1600,11 +1610,14 @@ window.App = {
     var points = pointsForAnswer(isCorrect, timeTakenSec);
     S.quiz.answers[q.id] = {questionId:q.id, selectedIndex:S.quiz.selected, isCorrect:isCorrect, timeTakenSec:timeTakenSec, points:points};
     if(!isCorrect){
-      Store.recordMistake(S.auth.email, q.id, S.quiz.selected).then(function(){
-        S.mistakes[q.id] = { questionId:q.id, wrongCount:(S.mistakes[q.id]?S.mistakes[q.id].wrongCount+1:1), lastSelectedIndex:S.quiz.selected };
-      });
+      /* Update the visible mistakes list right away instead of waiting on
+         the Firestore round-trip, so a slow/failed sync can't make a wrong
+         answer silently disappear from the review section. */
+      S.mistakes[q.id] = { questionId:q.id, wrongCount:(S.mistakes[q.id]?S.mistakes[q.id].wrongCount+1:1), lastSelectedIndex:S.quiz.selected };
+      Store.recordMistake(S.auth.email, q.id, S.quiz.selected).catch(function(err){ console.error('recordMistake failed', err); });
     } else if(S.quiz.isMistakesReview && S.mistakes[q.id]){
-      Store.removeMistake(S.auth.email, q.id).then(function(){ delete S.mistakes[q.id]; });
+      delete S.mistakes[q.id];
+      Store.removeMistake(S.auth.email, q.id).catch(function(err){ console.error('removeMistake failed', err); });
     }
     render();
   },
