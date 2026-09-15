@@ -480,6 +480,30 @@ var Store = (function(){
   var backend = null; // 'db' | 'local'
   var db = null;
   var LOCAL_KEY = 'tahsili_pro_v1';
+  var QUESTIONS_CACHE_KEY = 'tahsili_questions_cache_v1';
+
+  /* The question bank rarely changes, so instead of re-downloading all
+     ~1900 question documents every time a student opens the app (which
+     burns through the Firestore free-tier read quota fast), we cache them
+     in this browser and only re-download when a lightweight "version"
+     marker doc says something actually changed. */
+  function loadQuestionsCache(){
+    try{
+      var raw = localStorage.getItem(QUESTIONS_CACHE_KEY);
+      if(raw) return JSON.parse(raw);
+    }catch(e){}
+    return null;
+  }
+  function saveQuestionsCache(version, questions){
+    try{ localStorage.setItem(QUESTIONS_CACHE_KEY, JSON.stringify({version:version, questions:questions})); }catch(e){}
+  }
+  function bumpQuestionsVersion(){
+    if(!db) return;
+    db.doc('meta/questionsVersion').set({
+      version: firebase.firestore.FieldValue.increment(1),
+      updatedAt: Date.now()
+    }, {merge:true}).catch(function(err){ console.warn('bumpQuestionsVersion failed', err); });
+  }
 
   function localData(){
     try{
@@ -525,26 +549,54 @@ var Store = (function(){
       return snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
     });
   }
-  /* Live subscription: cb fires immediately with the current list, then again
-     every time anyone (any device, or the admin panel) changes a question —
-     no refresh/re-login needed. Returns an unsubscribe function. */
+  /* Live subscription: cb fires immediately with whatever we have cached
+     locally (instant boot, zero reads), then again with fresh data only
+     when the "questions changed" version marker actually moves — instead
+     of re-reading the whole ~1900-question collection on every single
+     app open. Returns an unsubscribe function. */
   function watchQuestions(cb){
     if(backend==='local'){ cb(Object.values(mem.questions)); return function(){}; }
-    return db.collection('questions').onSnapshot(function(snap){
-      cb(snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); }));
-    }, function(err){ console.warn('watchQuestions error', err); });
+
+    var cache = loadQuestionsCache();
+    var haveData = !!(cache && cache.questions && cache.questions.length);
+    if(haveData) cb(cache.questions);
+
+    var fetching = false;
+    function fetchFull(newVersion){
+      if(fetching) return;
+      fetching = true;
+      db.collection('questions').get().then(function(snap){
+        var list = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+        saveQuestionsCache(newVersion, list);
+        cache = { version:newVersion, questions:list };
+        haveData = true;
+        cb(list);
+      }).catch(function(err){
+        console.warn('watchQuestions fetchFull error', err);
+      }).finally(function(){ fetching = false; });
+    }
+
+    return db.doc('meta/questionsVersion').onSnapshot(function(snap){
+      var remoteVersion = (snap.exists && snap.data() && snap.data().version) || 0;
+      if(!haveData || !cache || cache.version !== remoteVersion){
+        fetchFull(remoteVersion);
+      }
+    }, function(err){
+      console.warn('watchQuestions(meta) error', err);
+      if(!haveData) fetchFull(0);
+    });
   }
   function addQuestion(q){
     if(backend==='local'){ var id=uid(); mem.questions[id]=Object.assign({id:id},q); saveLocal(); return Promise.resolve(id); }
-    return db.collection('questions').add(q).then(function(ref){ return ref.id; });
+    return db.collection('questions').add(q).then(function(ref){ bumpQuestionsVersion(); return ref.id; });
   }
   function updateQuestion(id,q){
     if(backend==='local'){ mem.questions[id]=Object.assign({id:id},q); saveLocal(); return Promise.resolve(); }
-    return db.doc('questions/'+id).update(q);
+    return db.doc('questions/'+id).update(q).then(function(){ bumpQuestionsVersion(); });
   }
   function deleteQuestion(id){
     if(backend==='local'){ delete mem.questions[id]; saveLocal(); return Promise.resolve(); }
-    return db.doc('questions/'+id).delete();
+    return db.doc('questions/'+id).delete().then(function(){ bumpQuestionsVersion(); });
   }
 
   /* ---- accounts (app-level sign in; not a platform identity) ---- */
@@ -1805,6 +1857,19 @@ function seedFallbackQuestionsIfNeeded(){
   }).catch(function(err){ console.warn('Question seed failed', err); });
 }
 
+/* Makes sure the lightweight "questions changed" version marker exists,
+   so watchQuestions() has something cheap to watch instead of re-reading
+   the whole question bank on every app open. Only ever writes once
+   (first login after this feature ships); after that it's a single
+   cheap read. */
+function ensureQuestionsVersionDoc(){
+  if(!fbDb) return Promise.resolve();
+  var ref = fbDb.doc('meta/questionsVersion');
+  return ref.get().then(function(snap){
+    if(!snap.exists) return ref.set({version:1, updatedAt:Date.now()});
+  }).catch(function(err){ console.warn('ensureQuestionsVersionDoc failed', err); });
+}
+
 function completeLogin(acc){
   S.auth = {loggedIn:true, email:acc.email, name:acc.name, phone:acc.phone};
   S.view='home';
@@ -1812,6 +1877,7 @@ function completeLogin(acc){
   clearActiveSubs();
   var needsSeed = fbDb && S.questions.length < 100;
   var seedReady = needsSeed ? seedFallbackQuestionsIfNeeded() : Promise.resolve();
+  seedReady = seedReady.then(ensureQuestionsVersionDoc);
   return seedReady.then(function(){
     return new Promise(function(resolve){
       var flags = {sessions:false, saved:false, mistakes:false, mockProgress:false, leaderboard:false};
