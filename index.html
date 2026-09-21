@@ -12,8 +12,6 @@
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="icon-192.png">
-<!-- Google AdSense loader (site verification + ad serving) -->
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9827302481824726" crossorigin="anonymous"></script>
 <!-- Firebase (real accounts + cloud data sync across devices) -->
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
@@ -373,14 +371,6 @@
     .modal-sheet{max-width:520px;max-height:80vh;border-radius:20px;}
   }
 
-  /* ---- ad slot placeholder (see index for how to plug in a real ad network) ---- */
-  .ad-slot{
-    display:flex;align-items:center;justify-content:center;flex-direction:column;gap:4px;
-    min-height:90px;border:1.5px dashed var(--line);border-radius:var(--radius-md);
-    color:var(--ink-soft);font-size:12px;font-weight:600;background:var(--surface-2);
-    padding:10px;text-align:center;
-  }
-  .ad-slot span.tag{font-size:10.5px;font-weight:700;letter-spacing:.04em;color:var(--ink-soft);opacity:.7;}
 </style>
 </head>
 <body>
@@ -421,7 +411,9 @@ var ICON_PATHS = {
   image:'<rect x="3" y="4.5" width="18" height="15" rx="2.2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M3 16l5-4.5 4 3.5 3-2.5 6 4.5"/>',
   download:'<path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 19.5h16"/>',
   upload:'<path d="M12 21V9M7.5 13.5 12 9l4.5 4.5"/><path d="M4 19.5h16"/>',
-  flag:'<path d="M6 21V4"/><path d="M6 4.5h11.5l-2.7 3.5 2.7 3.5H6"/>'
+  flag:'<path d="M6 21V4"/><path d="M6 4.5h11.5l-2.7 3.5 2.7 3.5H6"/>',
+  send:'<path d="M21 3 3 10.5l6.5 2.5M21 3 13.5 21l-4-8M21 3 9.5 13"/>',
+  tiktok:'<path d="M15 3v10.8a3.7 3.7 0 1 1-3.7-3.7c.4 0 .8.05 1.2.15"/><path d="M15 3c.35 2.1 1.9 3.75 4 4v3a7 7 0 0 1-4-1.25"/>'
 };
 function icon(name, extra){
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" '+(extra||'')+'>'+(ICON_PATHS[name]||'')+'</svg>';
@@ -685,25 +677,16 @@ var Store = (function(){
   }
   function recordMistake(ownerEmail, qid, selectedIndex){
     var id = mistakeDocId(ownerEmail,qid);
+    var payload = {questionId:qid, ownerEmail:ownerEmail, lastSelectedIndex:selectedIndex, updatedAt:Date.now()};
     if(backend==='local'){
       var prev = mem.mistakes[id];
-      var payload = {questionId:qid, ownerEmail:ownerEmail, lastSelectedIndex:selectedIndex, updatedAt:Date.now()};
       payload.wrongCount = prev ? prev.wrongCount+1 : 1;
       mem.mistakes[id]=payload; saveLocal(); return Promise.resolve();
     }
-    /* Write directly with increment() instead of reading the doc first.
-       A read-then-write here would fail under security rules that deny
-       reading a mistake doc before it exists, silently dropping the
-       mistake. set(..., {merge:true}) with increment() needs only a
-       write permission and works whether or not the doc already exists. */
-    var inc = firebase.firestore.FieldValue.increment;
-    return db.doc('mistakes/'+id).set({
-      questionId: qid,
-      ownerEmail: ownerEmail,
-      lastSelectedIndex: selectedIndex,
-      updatedAt: Date.now(),
-      wrongCount: inc(1)
-    }, {merge:true});
+    return db.doc('mistakes/'+id).get().then(function(s){
+      payload.wrongCount = (s.exists && s.data().wrongCount) ? s.data().wrongCount+1 : 1;
+      return db.doc('mistakes/'+id).set(payload);
+    });
   }
   function removeMistake(ownerEmail, qid){
     var id = mistakeDocId(ownerEmail,qid);
@@ -1042,14 +1025,6 @@ function renderHome(){
     '<div class="stat-tile"><span class="num" style="font-size:15px">'+st.level+'</span><span class="lbl">المستوى الحالي</span></div>'+
   '</div>';
 
-  /* ---- Ad slot ----
-     Placeholder banner space. To show real ads (e.g. Google AdSense):
-     1) Add the network's loader <script> tag once inside <head> above.
-     2) Replace the inner HTML below with that network's <ins>/ad snippet,
-        keeping the outer <div class="ad-slot" id="home-ad-slot"> wrapper so
-        the layout/spacing stays consistent with the rest of the app. */
-  html += '<div class="ad-slot" id="home-ad-slot"><span class="tag">إعلان</span><span>مساحة إعلانية</span></div>';
-
   html += renderLeaderboardCard();
 
   html += '<div class="card pad"><h3 style="font-size:15px;margin-bottom:8px;">النشاط الأخير</h3>';
@@ -1339,6 +1314,30 @@ function renderProfile(){
 
   html += '<button class="btn btn-danger-outline btn-block" onclick="App.logout()">'+icon('logout','width="16" height="16"')+' تسجيل الخروج</button>';
 
+  html += '<div class="card pad">'+
+    '<h3 style="font-size:14.5px;margin-bottom:6px;">تواصل معنا</h3>'+
+    '<a class="activity-row" href="https://wa.me/966553497001" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">'+
+      '<div class="activity-dot" style="background:var(--surface-2);color:var(--brand);">'+icon('phone','width="16" height="16"')+'</div>'+
+      '<div style="flex:1"><div class="title">تواصل معنا عبر واتساب</div><div class="sub">966553497001+</div></div>'+
+      icon('chevron','width="15" height="15" style="transform:scaleX(-1);flex-shrink:0;color:var(--ink-soft);"')+
+    '</a>'+
+    '<a class="activity-row" href="mailto:tahseelypro@gmail.com" style="text-decoration:none;color:inherit;">'+
+      '<div class="activity-dot" style="background:var(--surface-2);color:var(--brand);">'+icon('mail','width="16" height="16"')+'</div>'+
+      '<div style="flex:1"><div class="title">راسلنا عبر البريد الإلكتروني</div><div class="sub">tahseelypro@gmail.com</div></div>'+
+      icon('chevron','width="15" height="15" style="transform:scaleX(-1);flex-shrink:0;color:var(--ink-soft);"')+
+    '</a>'+
+    '<a class="activity-row" href="https://t.me/+F6Bl6TVTRZJlYTY8" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">'+
+      '<div class="activity-dot" style="background:var(--surface-2);color:var(--brand);">'+icon('send','width="16" height="16"')+'</div>'+
+      '<div style="flex:1"><div class="title">انضم إلى قروبنا في تيليجرام</div><div class="sub">آخر الأخبار والتحديثات</div></div>'+
+      icon('chevron','width="15" height="15" style="transform:scaleX(-1);flex-shrink:0;color:var(--ink-soft);"')+
+    '</a>'+
+    '<a class="activity-row" href="https://www.tiktok.com/@tahseelypro" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">'+
+      '<div class="activity-dot" style="background:var(--surface-2);color:var(--brand);">'+icon('tiktok','width="16" height="16"')+'</div>'+
+      '<div style="flex:1"><div class="title">تابعنا على تيك توك</div><div class="sub">@tahseelypro</div></div>'+
+      icon('chevron','width="15" height="15" style="transform:scaleX(-1);flex-shrink:0;color:var(--ink-soft);"')+
+    '</a>'+
+  '</div>';
+
   html += '<div class="stat-row">'+
     '<div class="stat-tile"><span class="num">'+st.attempts+'</span><span class="lbl">أسئلة محلولة</span></div>'+
     '<div class="stat-tile"><span class="num">'+(st.attempts?st.accuracy+'%':'—')+'</span><span class="lbl">نسبة الدقة</span></div>'+
@@ -1579,8 +1578,7 @@ window.App = {
       var q = S.quiz.list[i];
       if(!S.quiz.answers[q.id]){
         S.quiz.answers[q.id] = {questionId:q.id, selectedIndex:null, isCorrect:false, timeTakenSec:null, points:0};
-        S.mistakes[q.id] = { questionId:q.id, wrongCount:(S.mistakes[q.id]?S.mistakes[q.id].wrongCount+1:1), lastSelectedIndex:null };
-        Store.recordMistake(S.auth.email, q.id, null).catch(function(err){ console.error('recordMistake failed', err); });
+        Store.recordMistake(S.auth.email, q.id, null).then(function(){});
       }
     }
     if(S.quiz.sectionIndex+1 < S.quiz.sections.length){
@@ -1610,14 +1608,11 @@ window.App = {
     var points = pointsForAnswer(isCorrect, timeTakenSec);
     S.quiz.answers[q.id] = {questionId:q.id, selectedIndex:S.quiz.selected, isCorrect:isCorrect, timeTakenSec:timeTakenSec, points:points};
     if(!isCorrect){
-      /* Update the visible mistakes list right away instead of waiting on
-         the Firestore round-trip, so a slow/failed sync can't make a wrong
-         answer silently disappear from the review section. */
-      S.mistakes[q.id] = { questionId:q.id, wrongCount:(S.mistakes[q.id]?S.mistakes[q.id].wrongCount+1:1), lastSelectedIndex:S.quiz.selected };
-      Store.recordMistake(S.auth.email, q.id, S.quiz.selected).catch(function(err){ console.error('recordMistake failed', err); });
+      Store.recordMistake(S.auth.email, q.id, S.quiz.selected).then(function(){
+        S.mistakes[q.id] = { questionId:q.id, wrongCount:(S.mistakes[q.id]?S.mistakes[q.id].wrongCount+1:1), lastSelectedIndex:S.quiz.selected };
+      });
     } else if(S.quiz.isMistakesReview && S.mistakes[q.id]){
-      delete S.mistakes[q.id];
-      Store.removeMistake(S.auth.email, q.id).catch(function(err){ console.error('removeMistake failed', err); });
+      Store.removeMistake(S.auth.email, q.id).then(function(){ delete S.mistakes[q.id]; });
     }
     render();
   },
